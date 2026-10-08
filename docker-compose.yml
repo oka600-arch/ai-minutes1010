@@ -1,0 +1,7 @@
+# ローカル開発用：FastAPI をコンテナで起動する（フロントエンドは frontend/ で npm run dev）
+services:
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    ports:
+      - "8000:8000"

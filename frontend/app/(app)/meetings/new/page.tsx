@@ -11,11 +11,16 @@ import { TOOL_LABELS } from "@/lib/format";
 import { takePendingFile } from "@/lib/pending-file";
 import type { MeetingTool } from "@/lib/types";
 
+// 開催日時は日本時間として扱う（表示・ファイル名も日本時間で統一）
 function nowForInput(): string {
-  const d = new Date();
-  d.setMinutes(0, 0, 0);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const parts = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+  }).format(new Date());
+  return `${parts.replace(" ", "T")}:00`;
 }
 
 export default function NewMeetingPage() {
@@ -71,7 +76,7 @@ export default function NewMeetingPage() {
       setProgress(`アップロードしています…（${formatBytes(uploadFile.size)}）`);
       const created = await api.createMeeting({
         meeting_name: name.trim(),
-        meeting_datetime: new Date(datetime).toISOString(),
+        meeting_datetime: `${datetime}:00+09:00`,
         meeting_tool: tool,
         participants: participants.map((p) => p.trim()).filter(Boolean),
         input_type: inputType,
@@ -100,7 +105,7 @@ export default function NewMeetingPage() {
         </Field>
 
         <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="開催日時">
+          <Field label="開催日時（日本時間）">
             <input type="datetime-local" required value={datetime} onChange={(e) => setDatetime(e.target.value)} className={inputClass} />
           </Field>
           <Field label="会議ツール">
