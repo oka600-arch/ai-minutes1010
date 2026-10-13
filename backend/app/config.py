@@ -12,10 +12,20 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_service_role_key: str = ""
 
-    # OpenAI
-    openai_api_key: str = ""
-    openai_transcribe_model: str = "gpt-4o-transcribe"
-    openai_analysis_model: str = "gpt-4.1"
+    # 文字起こし（faster-whisper。サーバー内で動かすので無料）
+    # モデル：small（標準・速い）/ medium（より正確・約2〜3倍遅い）/ large-v3（最も正確・とても遅い）
+    whisper_model: str = "small"
+    whisper_device: str = "cpu"  # NVIDIA GPU があれば cuda
+    whisper_compute_type: str = "int8"  # GPU なら float16
+    whisper_cpu_threads: int = 0  # 0 は自動
+    whisper_beam_size: int = 5  # 1 にすると速くなるが、精度が少し下がる
+
+    # AI解析：gemini（Google Gemini API。無料枠あり）または ollama（ローカル LLM）
+    analysis_provider: str = "gemini"
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    ollama_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5:7b"
 
     # Dropbox（ユーザーごとの OAuth）
     dropbox_app_key: str = ""

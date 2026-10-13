@@ -3,13 +3,15 @@ from unittest.mock import patch
 
 from app.services.crypto import encrypt_token
 from app.services.pipeline import PipelineDeps, run_pipeline
-from tests.conftest import SAMPLE_DIR, FakeOpenAI
+from tests.conftest import SAMPLE_DIR, FakeAnalyzer, FakeTranscriber
 
 MID = "11111111-1111-1111-1111-111111111111"
 
 
 def _deps(repo, settings, sample_minutes):
-    return PipelineDeps(repo=repo, openai=FakeOpenAI(content=sample_minutes.model_dump_json()), settings=settings)
+    return PipelineDeps(
+        repo=repo, transcriber=FakeTranscriber(), analyzer=FakeAnalyzer(content=sample_minutes.model_dump_json()), settings=settings
+    )
 
 
 def test_text_input_runs_to_generated_without_dropbox(repo, settings, sample_minutes):
@@ -29,13 +31,13 @@ def test_failure_records_step_and_retry_resumes_there(repo, settings, sample_min
     repo.add_meeting(MID)
     repo.storage[("uploads", f"user-a/{MID}/source.txt")] = "山田：A案で進めましょう。".encode()
     deps = _deps(repo, settings, sample_minutes)
-    deps.openai.content = "壊れたJSON"
+    deps.analyzer.content = "壊れたJSON"
     run_pipeline(deps, MID)
     m = repo.meetings[MID]
     assert (m["status"], m["error_step"]) == ("ERROR", "analyze")
-    assert m["error_message"] == "AIの出力形式が正しくありませんでした。"
+    assert m["error_message"] == "AIの出力形式が正しくありませんでした。再試行してください。"
 
-    deps.openai.content = sample_minutes.model_dump_json()
+    deps.analyzer.content = sample_minutes.model_dump_json()
     run_pipeline(deps, MID)  # 文字起こしはやり直さない（元ファイルはもう無い）
     assert repo.meetings[MID]["status"] == "GENERATED"
 
@@ -43,9 +45,23 @@ def test_failure_records_step_and_retry_resumes_there(repo, settings, sample_min
 def test_missing_api_key_is_reported(repo, settings, sample_minutes):
     repo.add_meeting(MID, status="TRANSCRIBED")
     repo.transcripts[MID] = "山田：テスト"
-    settings.openai_api_key = ""
-    run_pipeline(_deps(repo, settings, sample_minutes), MID)
-    assert "APIキー" in repo.meetings[MID]["error_message"]
+    deps = _deps(repo, settings, sample_minutes)
+    deps.analyzer.problem = "Gemini APIキーが設定されていないため、AI解析を実行できません。"
+    run_pipeline(deps, MID)
+    assert (repo.meetings[MID]["error_step"], repo.meetings[MID]["error_message"]) == ("analyze", deps.analyzer.problem)
+
+
+def test_audio_input_is_transcribed_with_participant_names(repo, settings, sample_minutes):
+    repo.add_meeting(MID, input_type="audio", source_file_name="会議.webm", source_file_path=f"user-a/{MID}/source.webm")
+    repo.storage[("uploads", f"user-a/{MID}/source.webm")] = b"audio-bytes"
+    deps = _deps(repo, settings, sample_minutes)
+    deps.transcriber.transcript = "山田：A案で進めましょう。"
+    run_pipeline(deps, MID)
+    assert repo.meetings[MID]["status"] == "GENERATED", repo.meetings[MID]["error_message"]
+    assert deps.transcriber.calls[0]["participants"] == ["山田", "佐藤"]
+    assert deps.transcriber.calls[0]["source"].suffix == ".webm"
+    assert repo.transcripts[MID] == "山田：A案で進めましょう。"
+    assert repo.minutes[MID]["ai_model"] == "fake-model"
 
 
 def test_dropbox_step_uploads_and_completes(repo, settings, sample_minutes):

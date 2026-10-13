@@ -108,7 +108,14 @@ export default function MeetingPage() {
             </div>
           )}
           <ProgressSteps meeting={meeting} />
-          {processing && <p className="mt-4 text-xs text-gray-500">この画面を閉じても処理は続きます。</p>}
+          {processing && (
+            <p className="mt-4 text-xs text-gray-500">
+              {meeting.input_type !== "text" && meeting.status === "TRANSCRIBING"
+                ? "音声の文字起こしには、録音時間の半分〜同じくらいの時間がかかります。"
+                : ""}
+              この画面を閉じても処理は続きます。
+            </p>
+          )}
         </Card>
       )}
 

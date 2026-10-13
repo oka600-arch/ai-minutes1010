@@ -2,13 +2,13 @@ import json
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from app.config import Settings
 from app.schemas import MeetingStatus, MinutesData
+from app.services.analysis import _parse_minutes
 
 SAMPLE_DIR = Path(__file__).resolve().parents[2] / "sample-data"
 
@@ -123,27 +123,40 @@ class FakeRepo:
         return f"https://example.test/{path}?download={download_name}"
 
 
-class FakeOpenAI:
-    """chat.completions.create / audio.transcriptions.create だけを持つ代替。"""
+class FakeTranscriber:
+    """文字起こしの代替（Whisper モデルを読み込まずにテストするため）。"""
 
-    def __init__(self, content: str = "", finish_reason: str = "stop", transcript: str = "山田：テストです。") -> None:
+    def __init__(self, transcript: str = "山田：テストです。", problem: str | None = None) -> None:
+        self.transcript = transcript
+        self.problem = problem
         self.calls: list[dict[str, Any]] = []
+
+    def check(self) -> str | None:
+        return self.problem
+
+    def transcribe(self, source, participants, on_progress=None):
+        self.calls.append({"source": source, "participants": participants})
+        if on_progress:
+            on_progress()
+        return self.transcript
+
+
+class FakeAnalyzer:
+    """AI解析の代替。content を本物と同じ手順で検証・整形して返す。"""
+
+    model_name = "fake-model"
+
+    def __init__(self, content: str = "", problem: str | None = None) -> None:
         self.content = content
-        outer = self
+        self.problem = problem
+        self.calls: list[dict[str, Any]] = []
 
-        class _Completions:
-            def create(self, **kwargs):
-                outer.calls.append(kwargs)
-                msg = SimpleNamespace(content=outer.content, refusal=None)
-                return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason=finish_reason)])
+    def check(self) -> str | None:
+        return self.problem
 
-        class _Transcriptions:
-            def create(self, **kwargs):
-                outer.calls.append(kwargs)
-                return transcript
-
-        self.chat = SimpleNamespace(completions=_Completions())
-        self.audio = SimpleNamespace(transcriptions=_Transcriptions())
+    def analyze(self, info, transcript):
+        self.calls.append({"info": info, "transcript": transcript})
+        return _parse_minutes(self.content)
 
 
 @pytest.fixture
@@ -153,4 +166,4 @@ def repo() -> FakeRepo:
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(_env_file=None, openai_api_key="test-key", supabase_url="", supabase_service_role_key="")
+    return Settings(_env_file=None, gemini_api_key="test-key", supabase_url="", supabase_service_role_key="")

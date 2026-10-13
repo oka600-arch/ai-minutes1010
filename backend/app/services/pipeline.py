@@ -14,7 +14,7 @@ from typing import Any
 
 from app.config import Settings
 from app.schemas import MeetingInfo, MeetingStatus, MinutesData, PipelineStep
-from app.services.analysis import AnalysisError, analyze_transcript
+from app.services.analysis import AnalysisError, Analyzer
 from app.services.crypto import TokenCryptoError, decrypt_token
 from app.services.docx_builder import DocxBuildError, build_docx
 from app.services.dropbox_service import (
@@ -27,7 +27,7 @@ from app.services.dropbox_service import (
 from app.services.naming import base_name
 from app.services.pdf_builder import PdfBuildError, build_pdf
 from app.services.transcript_parser import TranscriptParseError, parse_transcript
-from app.services.transcription import TranscriptionError, transcribe_audio
+from app.services.transcription import Transcriber, TranscriptionError
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,8 @@ class StepError(Exception):
 @dataclass
 class PipelineDeps:
     repo: Any  # app.db.Repository と同じメソッドを持つオブジェクト
-    openai: Any  # openai.OpenAI
+    transcriber: Transcriber
+    analyzer: Analyzer
     settings: Settings
 
 
@@ -128,13 +129,19 @@ def _transcribe(deps: PipelineDeps, meeting: dict[str, Any]) -> None:
             raise StepError(str(exc)) from exc
         source_format = ext
     else:
-        if not s.openai_api_key:
-            raise StepError("OpenAI APIキーが設定されていないため、音声を文字起こしできません。")
+        problem = deps.transcriber.check()
+        if problem:
+            raise StepError(problem)
+
+        def still_working() -> None:
+            # 長い文字起こしの途中で「止まった処理」と誤判定されないよう、更新日時を進める
+            repo.update_meeting(meeting["id"], status=MeetingStatus.TRANSCRIBING)
+
         with tempfile.TemporaryDirectory() as tmp:
             audio_path = Path(tmp) / f"source.{ext or 'bin'}"
             audio_path.write_bytes(data)
             try:
-                text = transcribe_audio(deps.openai, s.openai_transcribe_model, audio_path, meeting_info(meeting).participants)
+                text = deps.transcriber.transcribe(audio_path, meeting_info(meeting).participants, still_working)
             except TranscriptionError as exc:
                 raise StepError(str(exc)) from exc
         source_format = "audio"
@@ -158,18 +165,19 @@ def _transcribe(deps: PipelineDeps, meeting: dict[str, Any]) -> None:
 
 
 def _analyze(deps: PipelineDeps, meeting: dict[str, Any]) -> None:
-    repo, s = deps.repo, deps.settings
+    repo = deps.repo
     repo.set_status(meeting["id"], MeetingStatus.ANALYZING)
-    if not s.openai_api_key:
-        raise StepError("OpenAI APIキーが設定されていないため、AI解析を実行できません。")
+    problem = deps.analyzer.check()
+    if problem:
+        raise StepError(problem)
     transcript = repo.get_transcript(meeting["id"])
     if not transcript:
         raise StepError("文字起こしデータが見つかりません。最初からやり直してください。")
     try:
-        minutes = analyze_transcript(deps.openai, s.openai_analysis_model, meeting_info(meeting), transcript)
+        minutes = deps.analyzer.analyze(meeting_info(meeting), transcript)
     except AnalysisError as exc:
         raise StepError(str(exc)) from exc
-    repo.save_minutes(meeting["id"], minutes, s.openai_analysis_model)
+    repo.save_minutes(meeting["id"], minutes, deps.analyzer.model_name)
     repo.set_status(meeting["id"], MeetingStatus.GENERATING)
 
 

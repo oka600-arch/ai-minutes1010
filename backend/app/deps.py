@@ -1,13 +1,14 @@
-"""FastAPI の依存関係（認証・リポジトリ・OpenAI クライアント）。"""
+"""FastAPI の依存関係（認証・リポジトリ・文字起こし／AI解析の部品）。"""
 
 from functools import lru_cache
 
 from fastapi import Depends, Header, HTTPException, status
-from openai import OpenAI
 
 from app.config import Settings, get_settings
 from app.db import Repository
+from app.services.analysis import Analyzer, GeminiAnalyzer, OllamaAnalyzer
 from app.services.pipeline import PipelineDeps
+from app.services.transcription import Transcriber, WhisperTranscriber
 
 
 @lru_cache
@@ -23,16 +24,25 @@ def get_repo() -> Repository:
 
 
 @lru_cache
-def get_openai() -> OpenAI:
+def get_transcriber() -> Transcriber:
+    # モデルは初回の文字起こし時に読み込む（起動を速くするため）。プロセス内で 1 つを使い回す
     s = get_settings()
-    # キー未設定でも起動できるようにし、実際の呼び出し時にエラーメッセージを出す
-    return OpenAI(api_key=s.openai_api_key or "not-configured", max_retries=2, timeout=600)
+    return WhisperTranscriber(s.whisper_model, s.whisper_device, s.whisper_compute_type, s.whisper_cpu_threads, s.whisper_beam_size)
+
+
+@lru_cache
+def get_analyzer() -> Analyzer:
+    # キー未設定でも起動できるようにし、実際の解析時にエラーメッセージを出す
+    s = get_settings()
+    if s.analysis_provider.lower() == "ollama":
+        return OllamaAnalyzer(s.ollama_url, s.ollama_model)
+    return GeminiAnalyzer(s.gemini_api_key, s.gemini_model)
 
 
 def get_pipeline_deps(
     repo: Repository = Depends(get_repo), settings: Settings = Depends(get_settings)
 ) -> PipelineDeps:
-    return PipelineDeps(repo=repo, openai=get_openai(), settings=settings)
+    return PipelineDeps(repo=repo, transcriber=get_transcriber(), analyzer=get_analyzer(), settings=settings)
 
 
 def current_user_id(

@@ -2,7 +2,7 @@ fastapi==0.115.12
 uvicorn[standard]==0.34.2
 pydantic==2.11.4
 pydantic-settings==2.9.1
-openai==1.82.0
+faster-whisper==1.2.1
 supabase==2.15.2
 python-docx==1.1.2
 reportlab==4.4.1

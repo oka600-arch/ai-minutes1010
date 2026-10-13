@@ -5,7 +5,7 @@ from app.config import get_settings
 from app.deps import get_pipeline_deps, get_repo
 from app.main import app
 from app.services.pipeline import PipelineDeps
-from tests.conftest import FakeOpenAI
+from tests.conftest import FakeAnalyzer, FakeTranscriber
 
 MID = "22222222-2222-2222-2222-222222222222"
 
@@ -15,7 +15,10 @@ def client(repo, settings, sample_minutes):
     app.dependency_overrides[get_repo] = lambda: repo
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_pipeline_deps] = lambda: PipelineDeps(
-        repo=repo, openai=FakeOpenAI(content=sample_minutes.model_dump_json()), settings=settings
+        repo=repo,
+        transcriber=FakeTranscriber(),
+        analyzer=FakeAnalyzer(content=sample_minutes.model_dump_json()),
+        settings=settings,
     )
     yield TestClient(app)
     app.dependency_overrides.clear()
