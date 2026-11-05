@@ -9,9 +9,12 @@ import subprocess
 import tempfile
 import threading
 import time
+import wave
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,16 @@ def to_wav(source: Path, workdir: Path) -> Path:
     if not dest.exists() or dest.stat().st_size <= 44:  # 44 バイトは WAV ヘッダーだけ
         raise TranscriptionError("音声データが見つかりませんでした。")
     return dest
+
+
+def load_wav(path: Path) -> np.ndarray:
+    """16bit モノラル WAV を Whisper が受け取る float32 配列にする。
+
+    faster-whisper 自身の音声読み込み（PyAV）は PyAV のバージョンによって動かないことがあるため、
+    ffmpeg で変換した WAV を自分で読み込んで渡す。"""
+    with wave.open(str(path), "rb") as w:
+        frames = w.readframes(w.getnframes())
+    return np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 def initial_prompt(participants: list[str]) -> str:
@@ -105,7 +118,7 @@ class WhisperTranscriber:
 
     def transcribe(self, source: Path, participants: list[str], on_progress: ProgressCallback | None = None) -> str:
         with tempfile.TemporaryDirectory() as tmp:
-            wav = to_wav(source, Path(tmp))
+            audio = load_wav(to_wav(source, Path(tmp)))
             with self._run_lock:
                 model = self._get_model()
                 started = time.monotonic()
@@ -113,7 +126,7 @@ class WhisperTranscriber:
                 texts: list[str] = []
                 try:
                     segments, _info = model.transcribe(
-                        str(wav),
+                        audio,
                         language="ja",
                         beam_size=self.beam_size,
                         initial_prompt=initial_prompt(participants),

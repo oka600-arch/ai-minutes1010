@@ -3,6 +3,7 @@
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
@@ -13,9 +14,9 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from app.schemas import MeetingInfo, MinutesData
-from app.services.docx_builder import DISCLAIMER, TOOL_LABELS
-from app.services.naming import format_datetime_ja
+from app.schemas import MeetingInfo
+from app.services.docx_builder import DISCLAIMER, body_fields, info_rows
+from app.services.minutes_types import MinutesTypeDef
 
 FONT_DIR = Path(__file__).resolve().parents[2] / "fonts"
 NAVY = colors.HexColor("#1F3A5F")
@@ -55,25 +56,45 @@ def _bullets(items: list[str], s: dict[str, ParagraphStyle]) -> list:
     return [_p(f"・{item}", s["bullet"]) for item in items]
 
 
-def build_pdf(info: MeetingInfo, minutes: MinutesData) -> bytes:
+def _multiline(text: str, s: dict[str, ParagraphStyle]) -> list:
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if not lines:
+        return [_p("なし", s["body"])]
+    out = []
+    for line in lines:
+        if line.startswith("・"):
+            out.append(_p(line, s["bullet"]))
+        elif line.startswith("【"):
+            out.append(_p(line, s["topic"]))
+        else:
+            out.append(_p(line, s["body"]))
+    return out
+
+
+def _todo_table(todos: list[dict[str, str]], s: dict[str, ParagraphStyle], width: float) -> Table:
+    rows = [[_p(h, s["cell_head"]) for h in ("タスク", "担当者", "期限")]]
+    rows += [[_p(t["task"], s["cell"]), _p(t["assignee"], s["cell"]), _p(t["deadline"], s["cell"])] for t in todos]
+    table = Table(rows, colWidths=[width - 80 * mm, 30 * mm, 50 * mm], repeatRows=1)
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.5, GRID),
+        ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    return table
+
+
+def build_pdf(info: MeetingInfo, t: MinutesTypeDef, data: dict[str, Any]) -> bytes:
     try:
         s = _styles()
         width = A4[0] - 36 * mm
         story: list = [
-            _p("議事録（AI自動生成ベース資料）", s["title"]),
+            _p(f"{t.doc_title}（AI自動生成ベース資料）", s["title"]),
             Spacer(1, 3 * mm),
             _p(DISCLAIMER, s["note"]),
-            _p("■ 会議情報", s["h"]),
-        ]
-
-        info_rows = [
-            ("会議名", info.meeting_name),
-            ("日時", format_datetime_ja(info.meeting_datetime)),
-            ("会議ツール", TOOL_LABELS.get(info.meeting_tool, "その他")),
-            ("参加者", "、".join(info.participants) if info.participants else "記載なし"),
+            _p("■ 基本情報", s["h"]),
         ]
         info_table = Table(
-            [[_p(k, s["cell"]), _p(v, s["cell"])] for k, v in info_rows],
+            [[_p(k, s["cell"]), _p(v, s["cell"])] for k, v in info_rows(info, t, data)],
             colWidths=[28 * mm, width - 28 * mm],
         )
         info_table.setStyle(TableStyle([
@@ -83,41 +104,22 @@ def build_pdf(info: MeetingInfo, minutes: MinutesData) -> bytes:
         ]))
         story.append(info_table)
 
-        story += [_p("■ 会議概要", s["h"]), _p(minutes.summary or "なし", s["body"])]
-
-        story.append(_p("■ 主な議論", s["h"]))
-        if not minutes.discussion:
-            story.append(_p("なし", s["body"]))
-        for i, item in enumerate(minutes.discussion, start=1):
-            story.append(_p(f"{i}. {item.topic}", s["topic"]))
-            for line in item.content.split("\n"):
-                line = line.strip().lstrip("・").strip()
-                if line:
-                    story.append(_p(f"・{line}", s["bullet"]))
-
-        story += [_p("■ 決定事項", s["h"]), *_bullets(minutes.decisions, s)]
-
-        story.append(_p("■ TODO", s["h"]))
-        if not minutes.todos:
-            story.append(_p("なし", s["body"]))
-        else:
-            rows = [[_p(h, s["cell_head"]) for h in ("タスク", "担当者", "期限")]]
-            rows += [[_p(t.task, s["cell"]), _p(t.assignee, s["cell"]), _p(t.deadline, s["cell"])] for t in minutes.todos]
-            todo_table = Table(rows, colWidths=[width - 80 * mm, 30 * mm, 50 * mm], repeatRows=1)
-            todo_table.setStyle(TableStyle([
-                ("GRID", (0, 0), (-1, -1), 0.5, GRID),
-                ("BACKGROUND", (0, 0), (-1, 0), NAVY),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ]))
-            story.append(todo_table)
-
-        story += [_p("■ 未決事項", s["h"]), *_bullets(minutes.unresolved_items, s)]
-        story += [_p("■ 次回確認事項", s["h"]), *_bullets(minutes.next_actions, s)]
+        for field in body_fields(t):
+            story.append(_p(f"■ {field.label}", s["h"]))
+            value = data.get(field.key)
+            if field.kind == "text":
+                story += _multiline(value or "", s)
+            elif field.kind == "list":
+                story += _bullets(value or [], s)
+            elif value:
+                story.append(_todo_table(value, s, width))
+            else:
+                story.append(_p("なし", s["body"]))
 
         buf = BytesIO()
         doc = SimpleDocTemplate(
             buf, pagesize=A4, leftMargin=18 * mm, rightMargin=18 * mm, topMargin=16 * mm, bottomMargin=16 * mm,
-            title=f"議事録 {info.meeting_name}", author="AI議事録システム",
+            title=f"{t.doc_title} {data.get('title') or info.meeting_name}", author="AI議事録システム",
         )
         doc.build(story, onFirstPage=_page_number, onLaterPages=_page_number)
         return buf.getvalue()

@@ -38,7 +38,8 @@ def test_audio_is_converted_and_transcribed_with_participant_hint(tmp_path):
     model = FakeWhisperModel.instances[0]
     assert model.size == "small" and model.kwargs["compute_type"] == "int8" and model.kwargs["device"] == "cpu"
     call = model.calls[0]
-    assert call["path"].endswith(".wav")  # ffmpeg で WAV に変換してから渡す
+    # ffmpeg で 16kHz の WAV に変換し、読み込んだ音声データ（3秒分）を渡す
+    assert call["path"].dtype.name == "float32" and abs(len(call["path"]) - 48000) < 1600
     assert call["language"] == "ja" and "山田、佐藤" in call["initial_prompt"] and call["vad_filter"] is True
 
     t.transcribe(_tone(tmp_path, "second.m4a"), [])

@@ -3,12 +3,12 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MinutesView } from "@/components/MinutesView";
+import { MinutesEditor, MinutesView } from "@/components/MinutesView";
 import { ProgressSteps } from "@/components/ProgressSteps";
 import { Alert, Button, Card } from "@/components/ui";
 import { api } from "@/lib/api";
 import { STEP_ERROR_LABELS, isProcessing } from "@/lib/format";
-import type { DropboxStatus, FileType, Meeting, Minutes } from "@/lib/types";
+import type { DropboxStatus, FileType, Meeting, Minutes, MinutesData, MinutesTypeDef } from "@/lib/types";
 
 const POLL_MS = 2000;
 
@@ -20,6 +20,9 @@ export default function MeetingPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [types, setTypes] = useState<MinutesTypeDef[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [saved, setSaved] = useState(false);
   const minutesLoaded = useRef(false);
 
   const load = useCallback(async () => {
@@ -41,6 +44,7 @@ export default function MeetingPage() {
   useEffect(() => {
     load();
     api.dropboxStatus().then(setDropbox).catch(() => setDropbox(null));
+    api.minutesTypes().then(setTypes).catch(() => setTypes([]));
   }, [load]);
 
   useEffect(() => {
@@ -54,6 +58,22 @@ export default function MeetingPage() {
     setActionError(null);
     try {
       setMeeting(await action());
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveMinutes(data: MinutesData) {
+    setBusy(true);
+    setActionError(null);
+    try {
+      setMinutes(await api.updateMinutes(id, data));
+      setEditing(false);
+      setSaved(true);
+      // Dropbox に保存済みなら上書き保存が始まるので、状態を取り直す
+      setMeeting(await api.getMeeting(id));
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -85,6 +105,7 @@ export default function MeetingPage() {
 
   const processing = isProcessing(meeting);
   const failed = meeting.status === "ERROR";
+  const minutesType = types.find((t) => t.key === (minutes?.minutes_type ?? meeting.minutes_type));
 
   return (
     <div className="space-y-6">
@@ -111,7 +132,7 @@ export default function MeetingPage() {
           {processing && (
             <p className="mt-4 text-xs text-gray-500">
               {meeting.input_type !== "text" && meeting.status === "TRANSCRIBING"
-                ? "音声の文字起こしには、録音時間の半分〜同じくらいの時間がかかります。"
+                ? "音声の文字起こしには、録音時間の4分の1〜半分ほどの時間がかかります。"
                 : ""}
               この画面を閉じても処理は続きます。
             </p>
@@ -123,10 +144,18 @@ export default function MeetingPage() {
         <Card>
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h1 className="text-lg font-bold">AI自動生成議事録</h1>
-              <p className="mt-1 text-xs text-gray-500">AIが生成したベース資料です。正式な議事録は内容を確認のうえ作成してください。</p>
+              <h1 className="text-lg font-bold">{minutesType?.label ?? "議事録"}（AI自動生成）</h1>
+              <p className="mt-1 text-xs text-gray-500">
+                AIが生成したベース資料です。内容を確認し、必要に応じて「編集」から書き換えてください。
+                {minutes.edited_at && "（編集済み）"}
+              </p>
             </div>
             <div className="flex flex-wrap gap-2">
+              {!editing && minutesType && (
+                <Button variant="secondary" onClick={() => { setEditing(true); setSaved(false); }} disabled={busy || processing}>
+                  編集
+                </Button>
+              )}
               <Button variant="secondary" onClick={() => download("docx")}>
                 Wordダウンロード
               </Button>
@@ -162,7 +191,18 @@ export default function MeetingPage() {
               <Alert>{actionError}</Alert>
             </div>
           )}
-          <MinutesView meeting={meeting} minutes={minutes} />
+          {saved && !editing && (
+            <div className="mb-4">
+              <Alert kind="success">編集内容を保存し、Word/PDFを更新しました。</Alert>
+            </div>
+          )}
+          {!minutesType ? (
+            <p className="text-sm text-gray-500">読み込み中…</p>
+          ) : editing ? (
+            <MinutesEditor type={minutesType} initial={minutes.data} saving={busy} onSave={saveMinutes} onCancel={() => setEditing(false)} />
+          ) : (
+            <MinutesView meeting={meeting} minutes={minutes} type={minutesType} />
+          )}
           <p className="mt-6 border-t border-gray-200 pt-3 text-xs text-gray-400">
             <button onClick={() => download("transcript")} className="hover:underline">
               文字起こし全文をダウンロード

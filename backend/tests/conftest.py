@@ -7,15 +7,21 @@ from typing import Any
 import pytest
 
 from app.config import Settings
-from app.schemas import MeetingStatus, MinutesData
+from app.schemas import MeetingStatus
 from app.services.analysis import _parse_minutes
 
 SAMPLE_DIR = Path(__file__).resolve().parents[2] / "sample-data"
 
 
-@pytest.fixture
-def sample_minutes() -> MinutesData:
-    return MinutesData.model_validate(json.loads((SAMPLE_DIR / "expected_minutes.json").read_text(encoding="utf-8")))
+def expected(type_key: str) -> dict[str, Any]:
+    """sample-data にある、種類ごとの期待される議事録。"""
+    return json.loads((SAMPLE_DIR / f"expected_{type_key}.json").read_text(encoding="utf-8"))
+
+
+def ai_json(type_key: str) -> str:
+    """AI が返すはずの JSON（タイトル・日時は AI に作らせないので除く）。"""
+    data = {k: v for k, v in expected(type_key).items() if k not in ("title", "datetime")}
+    return json.dumps(data, ensure_ascii=False)
 
 
 class FakeRepo:
@@ -39,7 +45,7 @@ class FakeRepo:
         row = {
             "id": meeting_id, "user_id": user_id, "meeting_name": "営業部 定例会議",
             "meeting_datetime": "2026-10-08T10:00:00+09:00", "meeting_tool": "zoom", "input_type": "text",
-            "source_file_name": "m.txt", "source_file_path": f"{user_id}/{meeting_id}/source.txt",
+            "minutes_type": "record", "source_file_name": "m.txt", "source_file_path": f"{user_id}/{meeting_id}/source.txt",
             "status": "UPLOADED", "error_step": None, "error_message": None, "dropbox_folder_path": None,
             "created_at": now, "updated_at": now,
             "participants": [{"id": "p1", "name": "山田", "email": None}, {"id": "p2", "name": "佐藤", "email": None}],
@@ -51,7 +57,7 @@ class FakeRepo:
     def create_meeting(self, user_id, body, source_path, meeting_id):
         return self.add_meeting(
             meeting_id, user_id, meeting_name=body.meeting_name, input_type=body.input_type,
-            source_file_name=body.file_name, source_file_path=source_path,
+            source_file_name=body.file_name, source_file_path=source_path, minutes_type=body.minutes_type,
             meeting_datetime=body.meeting_datetime.isoformat(),
             participants=[{"id": str(i), "name": n, "email": None} for i, n in enumerate(body.participants)],
         )
@@ -86,8 +92,11 @@ class FakeRepo:
     def get_transcript(self, meeting_id):
         return self.transcripts.get(meeting_id)
 
-    def save_minutes(self, meeting_id, minutes, model):
-        self.minutes[meeting_id] = {"meeting_id": meeting_id, "ai_model": model, **minutes.model_dump()}
+    def save_minutes(self, meeting_id, minutes_type, data, model):
+        self.minutes[meeting_id] = {"meeting_id": meeting_id, "minutes_type": minutes_type, "data": deepcopy(data), "ai_model": model, "edited_at": None}
+
+    def update_minutes_data(self, meeting_id, data):
+        self.minutes[meeting_id].update(data=deepcopy(data), edited_at=datetime.now(timezone.utc).isoformat())
 
     def get_minutes(self, meeting_id):
         return self.minutes.get(meeting_id)
@@ -146,17 +155,17 @@ class FakeAnalyzer:
 
     model_name = "fake-model"
 
-    def __init__(self, content: str = "", problem: str | None = None) -> None:
-        self.content = content
+    def __init__(self, content: str | None = None, problem: str | None = None) -> None:
+        self.content = content  # None なら種類ごとの期待値（sample-data）を返す
         self.problem = problem
         self.calls: list[dict[str, Any]] = []
 
     def check(self) -> str | None:
         return self.problem
 
-    def analyze(self, info, transcript):
-        self.calls.append({"info": info, "transcript": transcript})
-        return _parse_minutes(self.content)
+    def analyze(self, info, transcript, minutes_type):
+        self.calls.append({"info": info, "transcript": transcript, "minutes_type": minutes_type.key})
+        return _parse_minutes(self.content if self.content is not None else ai_json(minutes_type.key), minutes_type)
 
 
 @pytest.fixture

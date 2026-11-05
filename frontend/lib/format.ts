@@ -48,7 +48,7 @@ export function stepsFor(m: Meeting): StepView[] {
   return [
     { key: "upload", label: "ファイル受付" },
     { key: "transcribe", label: m.input_type === "text" ? "文字起こしデータ読込" : "文字起こし" },
-    { key: "analyze", label: "AI解析（要約・決定事項・TODO・未決事項）" },
+    { key: "analyze", label: "AI解析（要約・項目ごとの整理）" },
     { key: "generate", label: "Word/PDF生成" },
     { key: "dropbox", label: "Dropbox保存" },
   ];

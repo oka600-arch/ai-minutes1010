@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -36,27 +36,11 @@ InputType = Literal["audio", "video", "text"]
 FileType = Literal["transcript", "docx", "pdf"]
 
 
-# ---------- AI 出力（設計書22章） ----------
+# ---------- 議事録の種類（項目の定義は app/services/minutes_types.py） ----------
 
-
-class DiscussionItem(BaseModel):
-    topic: str
-    content: str
-
-
-class TodoItem(BaseModel):
-    task: str
-    assignee: str
-    deadline: str
-
-
-class MinutesData(BaseModel):
-    summary: str
-    discussion: list[DiscussionItem] = Field(default_factory=list)
-    decisions: list[str] = Field(default_factory=list)
-    todos: list[TodoItem] = Field(default_factory=list)
-    unresolved_items: list[str] = Field(default_factory=list)
-    next_actions: list[str] = Field(default_factory=list)
+MinutesTypeKey = Literal["record", "review", "daily"]
+# 議事録の中身。キーは種類ごとの項目（文字列・文字列の配列・TODO の配列）
+MinutesContent = dict[str, Any]
 
 
 class MeetingInfo(BaseModel):
@@ -77,6 +61,7 @@ class MeetingCreate(BaseModel):
     meeting_tool: MeetingTool = "other"
     participants: list[str] = Field(default_factory=list, max_length=50)
     input_type: InputType
+    minutes_type: MinutesTypeKey = "record"
     file_name: str = Field(min_length=1, max_length=255)
     file_size: int = Field(gt=0)
 
@@ -93,6 +78,7 @@ class Meeting(BaseModel):
     meeting_datetime: datetime
     meeting_tool: MeetingTool
     input_type: InputType
+    minutes_type: MinutesTypeKey = "record"
     source_file_name: str | None = None
     status: MeetingStatus
     error_step: PipelineStep | None = None
@@ -109,9 +95,16 @@ class MeetingCreateResponse(BaseModel):
     upload_token: str
 
 
-class MinutesResponse(MinutesData):
+class MinutesResponse(BaseModel):
     meeting_id: str
+    minutes_type: MinutesTypeKey
+    data: MinutesContent
     ai_model: str | None = None
+    edited_at: datetime | None = None
+
+
+class MinutesUpdate(BaseModel):
+    data: MinutesContent
 
 
 class FileUrlResponse(BaseModel):

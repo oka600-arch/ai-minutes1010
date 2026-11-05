@@ -9,7 +9,7 @@ from urllib.parse import quote
 from supabase import Client, create_client
 
 from app.config import get_settings
-from app.schemas import FileType, MeetingCreate, MeetingStatus, MinutesData, PipelineStep
+from app.schemas import FileType, MeetingCreate, MeetingStatus, MinutesContent, PipelineStep
 
 UPLOAD_BUCKET = "uploads"
 OUTPUT_BUCKET = "outputs"
@@ -46,6 +46,7 @@ class Repository:
             "meeting_datetime": body.meeting_datetime.isoformat(),
             "meeting_tool": body.meeting_tool,
             "input_type": body.input_type,
+            "minutes_type": body.minutes_type,
             "source_file_name": body.file_name,
             "source_file_path": source_path,
             "status": MeetingStatus.UPLOADED,
@@ -118,10 +119,18 @@ class Repository:
         rows = self.c.table("transcripts").select("transcript_text").eq("meeting_id", meeting_id).limit(1).execute().data
         return rows[0]["transcript_text"] if rows else None
 
-    def save_minutes(self, meeting_id: str, minutes: MinutesData, model: str) -> None:
+    def save_minutes(self, meeting_id: str, minutes_type: str, data: MinutesContent, model: str) -> None:
+        """AI が生成した内容を保存する（再生成時はユーザーの編集も上書きされる）。"""
         self.c.table("meeting_minutes").upsert(
-            {"meeting_id": meeting_id, "ai_model": model, **minutes.model_dump()}, on_conflict="meeting_id"
+            {"meeting_id": meeting_id, "minutes_type": minutes_type, "data": data, "ai_model": model, "edited_at": None},
+            on_conflict="meeting_id",
         ).execute()
+
+    def update_minutes_data(self, meeting_id: str, data: MinutesContent) -> None:
+        """ユーザーが画面で編集した内容を保存する。"""
+        self.c.table("meeting_minutes").update(
+            {"data": data, "edited_at": datetime.now(timezone.utc).isoformat()}
+        ).eq("meeting_id", meeting_id).execute()
 
     def get_minutes(self, meeting_id: str) -> dict[str, Any] | None:
         rows = self.c.table("meeting_minutes").select("*").eq("meeting_id", meeting_id).limit(1).execute().data

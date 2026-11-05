@@ -1,6 +1,7 @@
 """議事録の Word ファイルを生成する。"""
 
 from io import BytesIO
+from typing import Any
 
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
@@ -9,7 +10,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
-from app.schemas import MeetingInfo, MinutesData
+from app.schemas import MeetingInfo
+from app.services.minutes_types import FieldDef, MinutesTypeDef
 from app.services.naming import format_datetime_ja
 
 FONT_NAME = "游ゴシック"
@@ -72,7 +74,65 @@ def _bullets_or_none(doc, items: list[str]) -> None:
         _para(doc, item, bullet=True)
 
 
-def build_docx(info: MeetingInfo, minutes: MinutesData) -> bytes:
+def _todo_table(doc, todos: list[dict[str, str]]) -> None:
+    table = doc.add_table(rows=1, cols=3)
+    table.style = "Table Grid"
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    for cell, label in zip(table.rows[0].cells, ("タスク", "担当者", "期限")):
+        _shade(cell, "1F3A5F")
+        run = cell.paragraphs[0].add_run(label)
+        _set_font(run, size=10, bold=True)
+        run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        cell.paragraphs[0].paragraph_format.keep_with_next = True
+    _repeat_header(table.rows[0])
+    for todo in todos:
+        cells = table.add_row().cells
+        for cell, value in zip(cells, (todo["task"], todo["assignee"], todo["deadline"])):
+            _set_font(cell.paragraphs[0].add_run(value), size=10)
+    for row in table.rows:
+        for cell, width in zip(row.cells, (Cm(8.5), Cm(3), Cm(4.5))):
+            cell.width = width
+
+
+def _multiline(doc, text: str) -> None:
+    """改行を含む文章。「・」で始まる行は箇条書き、【】で始まる行は小見出しにする。"""
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if not lines:
+        _para(doc, "なし")
+    for line in lines:
+        if line.startswith("・"):
+            _para(doc, line[1:].strip(), bullet=True)
+        elif line.startswith("【"):
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(6)
+            p.paragraph_format.keep_with_next = True
+            _set_font(p.add_run(line), size=10.5, bold=True)
+        else:
+            _para(doc, line)
+
+
+def info_rows(info: MeetingInfo, t: MinutesTypeDef, data: dict[str, Any]) -> list[tuple[str, str]]:
+    """文書冒頭の表。会議記録はタイトル・日時・担当者を（編集後の値で）表示する。"""
+    title = data.get("title") or info.meeting_name
+    when = data.get("datetime") or format_datetime_ja(info.meeting_datetime)
+    rows = [("タイトル" if "title" in data else "会議名", title), ("日時", when)]
+    if "assignee" in data:
+        rows.append(("担当者", data.get("assignee") or "不明"))
+    rows += [
+        ("会議ツール", TOOL_LABELS.get(info.meeting_tool, "その他")),
+        ("参加者", "、".join(info.participants) if info.participants else "記載なし"),
+    ]
+    return rows
+
+
+HEADER_KEYS = {"title", "datetime", "assignee"}
+
+
+def body_fields(t: MinutesTypeDef) -> list[FieldDef]:
+    return [f for f in t.fields if f.key not in HEADER_KEYS]
+
+
+def build_docx(info: MeetingInfo, t: MinutesTypeDef, data: dict[str, Any]) -> bytes:
     try:
         doc = Document()
         normal = doc.styles["Normal"]
@@ -81,81 +141,35 @@ def build_docx(info: MeetingInfo, minutes: MinutesData) -> bytes:
 
         title = doc.add_paragraph()
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _set_font(title.add_run("議事録（AI自動生成ベース資料）"), size=16, bold=True)
+        _set_font(title.add_run(f"{t.doc_title}（AI自動生成ベース資料）"), size=16, bold=True)
 
         note = doc.add_paragraph()
         note_run = note.add_run(DISCLAIMER)
         _set_font(note_run, size=9)
         note_run.font.color.rgb = RGBColor(0x55, 0x5F, 0x6D)
 
-        # 1. 会議情報
-        _heading(doc, "会議情報")
-        info_rows = [
-            ("会議名", info.meeting_name),
-            ("日時", format_datetime_ja(info.meeting_datetime)),
-            ("会議ツール", TOOL_LABELS.get(info.meeting_tool, "その他")),
-            ("参加者", "、".join(info.participants) if info.participants else "記載なし"),
-        ]
-        table = doc.add_table(rows=len(info_rows), cols=2)
+        _heading(doc, "基本情報")
+        rows = info_rows(info, t, data)
+        table = doc.add_table(rows=len(rows), cols=2)
         table.style = "Table Grid"
-        for i, (label, value) in enumerate(info_rows):
+        for i, (label, value) in enumerate(rows):
             label_cell, value_cell = table.rows[i].cells
             _shade(label_cell, "EEF2F7")
             _set_font(label_cell.paragraphs[0].add_run(label), size=10, bold=True)
             _set_font(value_cell.paragraphs[0].add_run(value), size=10)
             label_cell.width, value_cell.width = Cm(3.2), Cm(12.8)
 
-        # 2. 会議概要
-        _heading(doc, "会議概要")
-        _para(doc, minutes.summary or "なし")
-
-        # 3. 主な議論
-        _heading(doc, "主な議論")
-        if not minutes.discussion:
-            _para(doc, "なし")
-        for i, item in enumerate(minutes.discussion, start=1):
-            p = doc.add_paragraph()
-            p.paragraph_format.space_before = Pt(4)
-            _set_font(p.add_run(f"{i}. {item.topic}"), size=10.5, bold=True)
-            for line in item.content.split("\n"):
-                line = line.strip().lstrip("・").strip()
-                if line:
-                    _para(doc, line, bullet=True)
-
-        # 4. 決定事項
-        _heading(doc, "決定事項")
-        _bullets_or_none(doc, minutes.decisions)
-
-        # 5〜7. TODO（担当者・期限）
-        _heading(doc, "TODO")
-        if not minutes.todos:
-            _para(doc, "なし")
-        else:
-            todo_table = doc.add_table(rows=1, cols=3)
-            todo_table.style = "Table Grid"
-            todo_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-            for cell, label in zip(todo_table.rows[0].cells, ("タスク", "担当者", "期限")):
-                _shade(cell, "1F3A5F")
-                run = cell.paragraphs[0].add_run(label)
-                _set_font(run, size=10, bold=True)
-                run.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-                cell.paragraphs[0].paragraph_format.keep_with_next = True
-            _repeat_header(todo_table.rows[0])
-            for todo in minutes.todos:
-                cells = todo_table.add_row().cells
-                for cell, value in zip(cells, (todo.task, todo.assignee, todo.deadline)):
-                    _set_font(cell.paragraphs[0].add_run(value), size=10)
-            for row in todo_table.rows:
-                for cell, width in zip(row.cells, (Cm(8.5), Cm(3), Cm(4.5))):
-                    cell.width = width
-
-        # 8. 未決事項
-        _heading(doc, "未決事項")
-        _bullets_or_none(doc, minutes.unresolved_items)
-
-        # 9. 次回確認事項
-        _heading(doc, "次回確認事項")
-        _bullets_or_none(doc, minutes.next_actions)
+        for field in body_fields(t):
+            _heading(doc, field.label)
+            value = data.get(field.key)
+            if field.kind == "text":
+                _multiline(doc, value or "")
+            elif field.kind == "list":
+                _bullets_or_none(doc, value or [])
+            elif value:
+                _todo_table(doc, value)
+            else:
+                _para(doc, "なし")
 
         buf = BytesIO()
         doc.save(buf)

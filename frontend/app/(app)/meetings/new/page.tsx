@@ -9,7 +9,7 @@ import { extractAudio } from "@/lib/audio-extract";
 import { MAX_AUDIO_BYTES, classifyFile, formatBytes, validateFile } from "@/lib/files";
 import { TOOL_LABELS } from "@/lib/format";
 import { takePendingFile } from "@/lib/pending-file";
-import type { MeetingTool } from "@/lib/types";
+import type { MeetingTool, MinutesTypeDef, MinutesTypeKey } from "@/lib/types";
 
 // 開催日時は日本時間として扱う（表示・ファイル名も日本時間で統一）
 function nowForInput(): string {
@@ -28,6 +28,8 @@ export default function NewMeetingPage() {
   const [name, setName] = useState("");
   const [datetime, setDatetime] = useState(nowForInput);
   const [tool, setTool] = useState<MeetingTool>("zoom");
+  const [minutesType, setMinutesType] = useState<MinutesTypeKey>("record");
+  const [types, setTypes] = useState<MinutesTypeDef[]>([]);
   const [participants, setParticipants] = useState<string[]>([""]);
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -36,6 +38,7 @@ export default function NewMeetingPage() {
   useEffect(() => {
     const f = takePendingFile();
     if (f) setFile(f);
+    api.minutesTypes().then(setTypes).catch(() => setTypes([]));
   }, []);
 
   function selectFile(f: File) {
@@ -80,6 +83,7 @@ export default function NewMeetingPage() {
         meeting_tool: tool,
         participants: participants.map((p) => p.trim()).filter(Boolean),
         input_type: inputType,
+        minutes_type: minutesType,
         file_name: uploadFile.name,
         file_size: uploadFile.size,
       });
@@ -103,6 +107,32 @@ export default function NewMeetingPage() {
         <Field label="会議名">
           <input required maxLength={100} value={name} onChange={(e) => setName(e.target.value)} placeholder="例：営業定例会議" className={inputClass} />
         </Field>
+
+        <fieldset>
+          <legend className="mb-1 block text-sm font-semibold text-gray-700">議事録の種類</legend>
+          <div className="grid gap-2 sm:grid-cols-3">
+            {types.map((t) => (
+              <label
+                key={t.key}
+                className={`cursor-pointer rounded-md border p-3 text-sm ${
+                  minutesType === t.key ? "border-brand-600 bg-brand-50 ring-2 ring-brand-100" : "border-gray-300 hover:bg-gray-50"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="minutes_type"
+                  value={t.key}
+                  checked={minutesType === t.key}
+                  onChange={() => setMinutesType(t.key)}
+                  className="sr-only"
+                />
+                <span className="block font-semibold">{t.label}</span>
+                <span className="mt-1 block text-xs text-gray-500">{t.description}</span>
+              </label>
+            ))}
+          </div>
+          {types.length === 0 && <p className="text-xs text-gray-500">種類を読み込んでいます…</p>}
+        </fieldset>
 
         <div className="grid gap-5 sm:grid-cols-2">
           <Field label="開催日時（日本時間）">

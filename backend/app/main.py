@@ -14,10 +14,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
 app.include_router(meetings.router)
+app.include_router(meetings.types_router)
 app.include_router(dropbox.router)
 
 

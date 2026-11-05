@@ -1,5 +1,15 @@
 import { getSupabase } from "./supabase";
-import type { DropboxStatus, FileType, FileUrl, Meeting, MeetingCreate, MeetingCreateResponse, Minutes } from "./types";
+import type {
+  DropboxStatus,
+  FileType,
+  FileUrl,
+  Meeting,
+  MeetingCreate,
+  MeetingCreateResponse,
+  Minutes,
+  MinutesData,
+  MinutesTypeDef,
+} from "./types";
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/$/, "");
 
@@ -47,6 +57,9 @@ export const api = {
     request<MeetingCreateResponse>("/api/meetings", { method: "POST", body: JSON.stringify(body) }),
   processMeeting: (id: string) => request<Meeting>(`/api/meetings/${id}/process`, { method: "POST" }),
   getMinutes: (id: string) => request<Minutes>(`/api/meetings/${id}/minutes`),
+  updateMinutes: (id: string, data: MinutesData) =>
+    request<Minutes>(`/api/meetings/${id}/minutes`, { method: "PUT", body: JSON.stringify({ data }) }),
+  minutesTypes: () => request<MinutesTypeDef[]>("/api/minutes-types"),
   getFileUrl: (id: string, type: FileType) => request<FileUrl>(`/api/meetings/${id}/files/${type}`),
   saveToDropbox: (id: string) => request<Meeting>(`/api/meetings/${id}/dropbox`, { method: "POST" }),
   dropboxStatus: () => request<DropboxStatus>("/api/dropbox/status"),

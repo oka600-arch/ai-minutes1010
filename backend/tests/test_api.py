@@ -11,13 +11,13 @@ MID = "22222222-2222-2222-2222-222222222222"
 
 
 @pytest.fixture
-def client(repo, settings, sample_minutes):
+def client(repo, settings):
     app.dependency_overrides[get_repo] = lambda: repo
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_pipeline_deps] = lambda: PipelineDeps(
         repo=repo,
         transcriber=FakeTranscriber(),
-        analyzer=FakeAnalyzer(content=sample_minutes.model_dump_json()),
+        analyzer=FakeAnalyzer(),
         settings=settings,
     )
     yield TestClient(app)
@@ -73,9 +73,10 @@ def test_process_runs_pipeline_and_minutes_are_returned(client, repo):
     # TestClient はバックグラウンドタスクをレスポンス後に同期実行する
     assert client.get(f"/api/meetings/{MID}", headers=A).json()["status"] == "GENERATED"
     minutes = client.get(f"/api/meetings/{MID}/minutes", headers=A).json()
-    assert minutes["todos"][0]["task"] == "製造業30社へのご案内メール送付"
+    assert minutes["minutes_type"] == "record"
+    assert minutes["data"]["title"] == "営業部 定例会議" and minutes["data"]["assignee"] == "山田"
     url = client.get(f"/api/meetings/{MID}/files/pdf", headers=A).json()
-    assert url["file_name"] == "2026-10-08_営業部 定例会議_議事録.pdf"
+    assert url["file_name"] == "2026-10-08_営業部 定例会議_会議記録.pdf"
     # 完了後に再度 process を呼ぶと 409
     assert client.post(f"/api/meetings/{MID}/process", headers=A).status_code == 409
 
@@ -97,3 +98,61 @@ def test_dropbox_callback_with_unknown_state_redirects(client, repo):
     res = client.get("/api/dropbox/callback?state=x&code=y", follow_redirects=False)
     assert res.status_code == 302
     assert res.headers["location"].endswith("/settings?dropbox=expired")
+
+
+def test_minutes_types_are_listed(client):
+    types = client.get("/api/minutes-types").json()
+    assert [t["key"] for t in types] == ["record", "review", "daily"]
+    record = types[0]
+    assert [f["label"] for f in record["fields"]] == ["タイトル", "日時", "担当者", "内容", "要約文", "詳細"]
+
+
+def test_create_meeting_keeps_minutes_type(client, repo):
+    res = client.post("/api/meetings", json={**BODY, "minutes_type": "review"}, headers=A)
+    assert res.status_code == 201
+    assert res.json()["meeting"]["minutes_type"] == "review"
+    assert client.post("/api/meetings", json={**BODY, "minutes_type": "unknown"}, headers=A).status_code == 422
+
+
+def _generated(client, repo, minutes_type="record"):
+    repo.add_meeting(MID, minutes_type=minutes_type)
+    repo.storage[("uploads", f"user-a/{MID}/source.txt")] = "山田：A案で進めましょう。".encode()
+    client.post(f"/api/meetings/{MID}/process", headers=A)
+    return client.get(f"/api/meetings/{MID}/minutes", headers=A).json()["data"]
+
+
+def test_edit_minutes_saves_and_regenerates_documents(client, repo):
+    data = _generated(client, repo)
+    before = repo.storage[("outputs", f"user-a/{MID}/meeting_minutes.docx")]
+    data["title"] = "営業部 定例会議（修正版）"
+    data["content"] = ["来月の営業目標", "  ", "新規顧客へのアプローチ"]
+    res = client.put(f"/api/meetings/{MID}/minutes", json={"data": data}, headers=A)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["data"]["title"] == "営業部 定例会議（修正版）"
+    assert body["data"]["content"] == ["来月の営業目標", "新規顧客へのアプローチ"]  # 空行は除く
+    assert body["edited_at"] is not None
+    assert repo.storage[("outputs", f"user-a/{MID}/meeting_minutes.docx")] != before
+
+
+def test_edit_minutes_rejects_bad_data_and_other_users(client, repo):
+    data = _generated(client, repo)
+    assert client.put(f"/api/meetings/{MID}/minutes", json={"data": {**data, "content": "文字列"}}, headers=A).status_code == 422
+    assert client.put(f"/api/meetings/{MID}/minutes", json={"data": data}, headers=B).status_code == 404
+
+
+def test_edit_is_blocked_while_processing(client, repo):
+    _generated(client, repo)
+    repo.meetings[MID]["status"] = "ANALYZING"
+    res = client.put(f"/api/meetings/{MID}/minutes", json={"data": {}}, headers=A)
+    assert res.status_code == 409
+
+
+def test_edit_resaves_to_dropbox_when_already_saved(client, repo, monkeypatch):
+    data = _generated(client, repo)
+    repo.meetings[MID].update(status="COMPLETED", dropbox_folder_path="/AI議事録/2026/10月/2026-10-08_営業部 定例会議")
+    repo.dropbox["user-a"] = {"refresh_token_encrypted": "x"}
+    calls = []
+    monkeypatch.setattr("app.routers.meetings.run_pipeline", lambda deps, mid, only=None: calls.append((mid, only)))
+    assert client.put(f"/api/meetings/{MID}/minutes", json={"data": data}, headers=A).status_code == 200
+    assert calls == [(MID, "dropbox")]

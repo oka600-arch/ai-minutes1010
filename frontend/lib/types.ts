@@ -15,6 +15,7 @@ export type PipelineStep = "transcribe" | "analyze" | "generate" | "dropbox";
 export type MeetingTool = "zoom" | "google_meet" | "teams" | "other";
 export type InputType = "audio" | "video" | "text";
 export type FileType = "transcript" | "docx" | "pdf";
+export type MinutesTypeKey = "record" | "review" | "daily";
 
 export interface Participant {
   id: string;
@@ -28,6 +29,7 @@ export interface Meeting {
   meeting_datetime: string;
   meeting_tool: MeetingTool;
   input_type: InputType;
+  minutes_type: MinutesTypeKey;
   source_file_name: string | null;
   status: MeetingStatus;
   error_step: PipelineStep | null;
@@ -44,6 +46,7 @@ export interface MeetingCreate {
   meeting_tool: MeetingTool;
   participants: string[];
   input_type: InputType;
+  minutes_type: MinutesTypeKey;
   file_name: string;
   file_size: number;
 }
@@ -54,26 +57,37 @@ export interface MeetingCreateResponse {
   upload_token: string;
 }
 
-export interface DiscussionItem {
-  topic: string;
-  content: string;
-}
-
 export interface TodoItem {
   task: string;
   assignee: string;
   deadline: string;
 }
 
+export type FieldKind = "text" | "list" | "todos";
+
+export interface MinutesFieldDef {
+  key: string;
+  label: string;
+  kind: FieldKind;
+}
+
+/** 議事録の種類（FastAPI の /api/minutes-types が返す定義） */
+export interface MinutesTypeDef {
+  key: MinutesTypeKey;
+  label: string;
+  description: string;
+  fields: MinutesFieldDef[];
+}
+
+/** 議事録の中身。キーは種類ごとの項目 */
+export type MinutesData = Record<string, string | string[] | TodoItem[]>;
+
 export interface Minutes {
   meeting_id: string;
+  minutes_type: MinutesTypeKey;
+  data: MinutesData;
   ai_model: string | null;
-  summary: string;
-  discussion: DiscussionItem[];
-  decisions: string[];
-  todos: TodoItem[];
-  unresolved_items: string[];
-  next_actions: string[];
+  edited_at: string | null;
 }
 
 export interface FileUrl {

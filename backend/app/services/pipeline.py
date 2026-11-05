@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.schemas import MeetingInfo, MeetingStatus, MinutesData, PipelineStep
+from app.schemas import MeetingInfo, MeetingStatus, PipelineStep
 from app.services.analysis import AnalysisError, Analyzer
 from app.services.crypto import TokenCryptoError, decrypt_token
 from app.services.docx_builder import DocxBuildError, build_docx
+from app.services.minutes_types import fill_meeting_info, get_type, normalize
 from app.services.dropbox_service import (
     DropboxAuthExpired,
     DropboxServiceError,
@@ -174,24 +175,26 @@ def _analyze(deps: PipelineDeps, meeting: dict[str, Any]) -> None:
     if not transcript:
         raise StepError("文字起こしデータが見つかりません。最初からやり直してください。")
     try:
-        minutes = deps.analyzer.analyze(meeting_info(meeting), transcript)
+        t = get_type(meeting.get("minutes_type"))
+        info = meeting_info(meeting)
+        minutes = fill_meeting_info(t, deps.analyzer.analyze(info, transcript, t), info)
     except AnalysisError as exc:
         raise StepError(str(exc)) from exc
-    repo.save_minutes(meeting["id"], minutes, deps.analyzer.model_name)
+    repo.save_minutes(meeting["id"], t.key, minutes, deps.analyzer.model_name)
     repo.set_status(meeting["id"], MeetingStatus.GENERATING)
 
 
-def _generate(deps: PipelineDeps, meeting: dict[str, Any]) -> None:
-    repo = deps.repo
-    repo.set_status(meeting["id"], MeetingStatus.GENERATING)
+def generate_documents(repo: Any, meeting: dict[str, Any]) -> None:
+    """保存されている議事録データから Word/PDF を作り直す（AI 解析後と、画面で編集した後に呼ぶ）。"""
     row = repo.get_minutes(meeting["id"])
     if row is None:
         raise StepError("議事録データが見つかりません。AI解析からやり直してください。")
-    minutes = MinutesData.model_validate(row)
+    t = get_type(row.get("minutes_type") or meeting.get("minutes_type"))
+    data = normalize(t, row.get("data") or {})
     info = meeting_info(meeting)
     try:
-        docx = build_docx(info, minutes)
-        pdf = build_pdf(info, minutes)
+        docx = build_docx(info, t, data)
+        pdf = build_pdf(info, t, data)
     except (DocxBuildError, PdfBuildError) as exc:
         raise StepError(str(exc)) from exc
     d = output_dir(meeting)
@@ -199,6 +202,12 @@ def _generate(deps: PipelineDeps, meeting: dict[str, Any]) -> None:
     repo.save_file(meeting["id"], "docx", "meeting_minutes.docx", f"{d}/meeting_minutes.docx")
     repo.upload_output(f"{d}/meeting_minutes.pdf", pdf, "application/pdf")
     repo.save_file(meeting["id"], "pdf", "meeting_minutes.pdf", f"{d}/meeting_minutes.pdf")
+
+
+def _generate(deps: PipelineDeps, meeting: dict[str, Any]) -> None:
+    repo = deps.repo
+    repo.set_status(meeting["id"], MeetingStatus.GENERATING)
+    generate_documents(repo, meeting)
     repo.set_status(meeting["id"], MeetingStatus.GENERATED)
 
 
@@ -249,8 +258,9 @@ def _save_to_dropbox(deps: PipelineDeps, meeting: dict[str, Any]) -> None:
 def download_name(meeting: dict[str, Any], file_type: str) -> str:
     """ダウンロード時のファイル名：2026-10-08_営業定例会議_議事録.docx"""
     base = base_name(meeting["meeting_name"], datetime.fromisoformat(meeting["meeting_datetime"]))
+    label = get_type(meeting.get("minutes_type")).label
     return {
-        "docx": f"{base}_議事録.docx",
-        "pdf": f"{base}_議事録.pdf",
+        "docx": f"{base}_{label}.docx",
+        "pdf": f"{base}_{label}.pdf",
         "transcript": f"{base}_文字起こし.txt",
     }[file_type]

@@ -21,8 +21,10 @@ Supabase（PostgreSQL + RLS / Storage）
 |---|---|
 | ログイン・アカウント登録 | 実装済み（Supabase Auth） |
 | 会議データアップロード（音声・動画・TXT・VTT・SRT） | 実装済み |
-| 音声文字起こし（faster-whisper、無料・音声を外部に送らない） | 実装済み・**実際の録音での確認はまだ**（開発環境からモデルを取得できないため） |
+| 音声文字起こし（faster-whisper、無料・音声を外部に送らない） | 実装済み・読み上げソフトで作ったテスト音声で確認済み（下記） |
 | AI解析（Gemini 無料枠。Ollama のローカル AI にも切り替え可） | 実装済み・**実APIでの確認はまだ** |
+| 議事録の種類（会議記録・会議の振り返り・日常の振り返り） | 実装済み。アップロード時に選ぶ |
+| 議事録の編集（画面で書き換え → Word/PDF を作り直し、Dropbox 保存済みなら上書き） | 実装済み |
 | Word / PDF 生成（日本語フォント埋め込み） | 実装済み・確認済み |
 | Dropbox 保存（ユーザーごとの OAuth） | 実装済み・**実アカウントでの確認はまだ** |
 | 処理状況表示・エラー表示・再試行（失敗したステップから再開） | 実装済み・確認済み |
@@ -42,7 +44,7 @@ sample-data/ 架空の「営業部 定例会議」（TXT / VTT）と、期待さ
 
 ### 1. Supabase
 1. https://supabase.com でプロジェクトを作成
-2. SQL Editor で `supabase/migrations/0001_init.sql` を実行
+2. SQL Editor で `supabase/migrations/0001_init.sql`、`0002_minutes_types.sql` の順に実行
 3. Authentication > Providers で Email を有効化（デモ用なら「Confirm email」をオフにすると、登録後すぐログインできます）
 4. Project Settings > API から次の値を控える
    - Project URL
@@ -51,7 +53,7 @@ sample-data/ 架空の「営業部 定例会議」（TXT / VTT）と、期待さ
 
 ### 2. AI（無料）
 **文字起こし（Whisper）**：キーは不要です。初回にモデル（small は約 500MB）を自動でダウンロードします。Docker の場合はイメージ作成時に含めます。
-`.env` の `WHISPER_MODEL` で精度と速さを選べます。GPU のない PC では、1 時間の録音に small で 20〜40 分ほどかかる見込みです（目安・未計測）。
+`.env` の `WHISPER_MODEL` で精度と速さを選べます。GPU のない PC では、1 時間の録音に small で約15分（4コアCPUで計測。2コアのサーバーならその倍ほど）かかります。雑音が多い録音ではさらに時間がかかります。
 
 | モデル | 精度 | 速さ（CPU） | メモリ |
 |---|---|---|---|
@@ -99,6 +101,17 @@ cd backend && pytest                       # API・パイプライン・文字�
 cd frontend && npm run lint && npm run build
 ```
 
+録音ファイルで、文字起こしから Word/PDF までを通して試すスクリプトもあります（Supabase・Dropbox は不要）。
+```bash
+cd backend
+pip install pyopenjtalk-plus                                   # テスト音声を作る場合だけ
+python scripts/make_sample_audio.py ../sample-data/furikaeri_campaign_2026-10-20.txt test.m4a
+python scripts/e2e_audio_test.py test.m4a review out/ ../sample-data/furikaeri_campaign_2026-10-20.txt
+```
+`out/` に文字起こし・議事録（JSON / Word / PDF）・処理時間と文字誤り率（report.json）が出力されます。AI解析は `GEMINI_API_KEY` がある場合だけ実行します。
+
+**計測結果（4コアCPU・GPUなし・small モデル）**：読み上げソフトで作った会話音声（4分・2分・1分半）の文字起こしは、録音時間の約4分の1の時間で終わり、文字誤り率は3.5〜6.9%でした。1時間の録音なら約15分の計算です。実際の会議は雑音や発言の重なりがあるため、これより遅く、誤りも増えます。Whisper は話者を区別しないので、文字起こしに話者名は入りません（担当者は発言の中の名前から判断します）。
+
 ## デプロイ（予定）
 - **バックエンド**：Whisper を動かすにはメモリが 2GB 以上必要なため、Render の無料プラン（512MB）では動きません。次のどちらかにします
   - **Hugging Face Spaces（無料・CPU 2コア／メモリ 16GB）**：Space を「Docker」で作成し、`backend/` の中身を置きます。Space の README 冒頭に `sdk: docker` と `app_port: 8000` を書き、Settings > Variables and secrets に `.env.example` の項目を登録します。しばらく使わないと停止し、起動に数分かかるので、面談前に `/health` を開いて起こしておきます
@@ -116,7 +129,7 @@ cd frontend && npm run lint && npm run build
 7. Word と PDF をダウンロードし、Dropbox の `/AI議事録/2026/10月/2026-10-08_営業部 定例会議/` を開いて見せる
 8. 将来は Zoom・Google Meet・Teams の録画や文字起こし API とつなぐことで、会議終了後の処理まで自動化できる、と説明する
 
-期待される抽出結果は `sample-data/expected_minutes.json` にあります（STEP 8 で実際の AI 出力と比べます）。
+議事録の種類ごとのサンプル会話と、期待される抽出結果が `sample-data/` にあります（会議記録：`eigyo_teirei_*`／`expected_record.json`、会議の振り返り：`furikaeri_campaign_*`／`expected_review.json`、日常の振り返り：`nippou_furikaeri_*`／`expected_daily.json`）。
 
 ## セキュリティ上の注意
 - API キーはすべて環境変数で管理し、ブラウザに渡すのは Supabase の anon キーだけです
